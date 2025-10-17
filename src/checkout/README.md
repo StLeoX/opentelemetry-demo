@@ -34,3 +34,11 @@ To bump all dependencies run:
 go get -u -t ./...
 go mod tidy
 ```
+
+## Local Docker Build
+
+```
+go generate
+go build -o checkout .
+docker build -t 1.94.151.57:85/open-telemetry/demo:checkout .
+```

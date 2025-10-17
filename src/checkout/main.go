@@ -51,6 +51,7 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/open-telemetry/opentelemetry-demo/src/checkout/genproto/oteldemo"
@@ -66,6 +67,44 @@ var logger *slog.Logger
 var tracer trace.Tracer
 var resource *sdkresource.Resource
 var initResourcesOnce sync.Once
+
+// addGRPCContentToSpan adds the protobuf request content as JSON to the span
+func addGRPCContentToSpan(ctx context.Context, req proto.Message) {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+
+	// Convert protobuf to JSON
+	marshaler := protojson.MarshalOptions{
+		UseProtoNames:   true,
+		EmitUnpopulated: false,
+	}
+
+	jsonBytes, err := marshaler.Marshal(req)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to marshal protobuf to JSON: %v", err))
+		return
+	}
+
+	span.SetAttributes(attribute.String("rpc.grpc.content", string(jsonBytes)))
+}
+
+// addHTTPContentToSpan adds the HTTP request content as JSON to the span
+func addHTTPContentToSpan(ctx context.Context, payload interface{}) {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return
+	}
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Failed to marshal HTTP payload to JSON: %v", err))
+		return
+	}
+
+	span.SetAttributes(attribute.String("http.request_content", string(jsonBytes)))
+}
 
 func initResource() *sdkresource.Resource {
 	initResourcesOnce.Do(func() {
@@ -292,6 +331,10 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 		attribute.String("app.user.id", req.UserId),
 		attribute.String("app.user.currency", req.UserCurrency),
 	)
+
+	// Add request content to span
+	addGRPCContentToSpan(ctx, req)
+
 	logger.LogAttrs(
 		ctx,
 		slog.LevelInfo, "[PlaceOrder]",
@@ -452,10 +495,15 @@ func mustCreateClient(svcAddr string) *grpc.ClientConn {
 }
 
 func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, items []*pb.CartItem) (*pb.Money, error) {
-	quotePayload, err := json.Marshal(map[string]interface{}{
+	payload := map[string]interface{}{
 		"address": address,
 		"items":   items,
-	})
+	}
+
+	// Add request content to span
+	addHTTPContentToSpan(ctx, payload)
+
+	quotePayload, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal ship order request: %+v", err)
 	}
@@ -489,7 +537,10 @@ func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, item
 }
 
 func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartItem, error) {
-	cart, err := cs.cartSvcClient.GetCart(ctx, &pb.GetCartRequest{UserId: userID})
+	req := &pb.GetCartRequest{UserId: userID}
+	addGRPCContentToSpan(ctx, req)
+
+	cart, err := cs.cartSvcClient.GetCart(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user cart during checkout: %+v", err)
 	}
@@ -497,7 +548,10 @@ func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartI
 }
 
 func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
-	if _, err := cs.cartSvcClient.EmptyCart(ctx, &pb.EmptyCartRequest{UserId: userID}); err != nil {
+	req := &pb.EmptyCartRequest{UserId: userID}
+	addGRPCContentToSpan(ctx, req)
+
+	if _, err := cs.cartSvcClient.EmptyCart(ctx, req); err != nil {
 		return fmt.Errorf("failed to empty user cart during checkout: %+v", err)
 	}
 	return nil
@@ -507,7 +561,10 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 	out := make([]*pb.OrderItem, len(items))
 
 	for i, item := range items {
-		product, err := cs.productCatalogSvcClient.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
+		req := &pb.GetProductRequest{Id: item.GetProductId()}
+		addGRPCContentToSpan(ctx, req)
+
+		product, err := cs.productCatalogSvcClient.GetProduct(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
 		}
@@ -523,9 +580,12 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 }
 
 func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurrency string) (*pb.Money, error) {
-	result, err := cs.currencySvcClient.Convert(ctx, &pb.CurrencyConversionRequest{
+	req := &pb.CurrencyConversionRequest{
 		From:   from,
-		ToCode: toCurrency})
+		ToCode: toCurrency}
+	addGRPCContentToSpan(ctx, req)
+
+	result, err := cs.currencySvcClient.Convert(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert currency: %+v", err)
 	}
@@ -540,9 +600,12 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 		paymentService = pb.NewPaymentServiceClient(c)
 	}
 
-	paymentResp, err := paymentService.Charge(ctx, &pb.ChargeRequest{
+	req := &pb.ChargeRequest{
 		Amount:     amount,
-		CreditCard: paymentInfo})
+		CreditCard: paymentInfo}
+	addGRPCContentToSpan(ctx, req)
+
+	paymentResp, err := paymentService.Charge(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("could not charge the card: %+v", err)
 	}
@@ -550,10 +613,15 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 }
 
 func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, order *pb.OrderResult) error {
-	emailPayload, err := json.Marshal(map[string]interface{}{
+	payload := map[string]interface{}{
 		"email": email,
 		"order": order,
-	})
+	}
+
+	// Add request content to span
+	addHTTPContentToSpan(ctx, payload)
+
+	emailPayload, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal order to JSON: %+v", err)
 	}
@@ -572,10 +640,15 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 }
 
 func (cs *checkout) shipOrder(ctx context.Context, address *pb.Address, items []*pb.CartItem) (string, error) {
-	shipPayload, err := json.Marshal(map[string]interface{}{
+	payload := map[string]interface{}{
 		"address": address,
 		"items":   items,
-	})
+	}
+
+	// Add request content to span
+	addHTTPContentToSpan(ctx, payload)
+
+	shipPayload, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal ship order request: %+v", err)
 	}
@@ -688,6 +761,32 @@ func createProducerSpan(ctx context.Context, msg *sarama.ProducerMessage) trace.
 			semconv.MessagingKafkaDestinationPartition(int(msg.Partition)),
 		),
 	)
+
+	// Add message content to span
+	if msg.Value != nil {
+		// The message value is a protobuf-serialized OrderResult
+		messageBytes, err := msg.Value.Encode()
+		if err == nil {
+			// Deserialize the protobuf message
+			var orderResult pb.OrderResult
+			if err := proto.Unmarshal(messageBytes, &orderResult); err == nil {
+				// Convert to JSON
+				marshaler := protojson.MarshalOptions{
+					UseProtoNames:   true,
+					EmitUnpopulated: false,
+				}
+				if jsonBytes, err := marshaler.Marshal(&orderResult); err == nil {
+					span.SetAttributes(attribute.String("messaging.kafka.message.value", string(jsonBytes)))
+				} else {
+					logger.Warn(fmt.Sprintf("Failed to marshal Kafka message to JSON: %v", err))
+				}
+			} else {
+				logger.Warn(fmt.Sprintf("Failed to unmarshal Kafka message from protobuf: %v", err))
+			}
+		} else {
+			logger.Warn(fmt.Sprintf("Failed to encode Kafka message value: %v", err))
+		}
+	}
 
 	carrier := propagation.MapCarrier{}
 	propagator := otel.GetTextMapPropagator()
