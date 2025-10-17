@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Nightly Release
 
-on:
-  schedule:
-    # Runs at 00:00 UTC every day
-    - cron: '0 0 * * *'
+#on:
+#  schedule:
+#    # Runs at 00:00 UTC every day
+#    - cron: '0 0 * * *'
 
 permissions:
   contents: read

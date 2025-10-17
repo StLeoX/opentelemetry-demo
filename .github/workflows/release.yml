@@ -5,6 +5,23 @@ name: "Build and Publish"
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the images'
+        required: false
+        default: 'dev'
+        type: string
+      push_images:
+        description: 'Push images to registry'
+        required: false
+        default: true
+        type: boolean
+  push:
+    branches:
+      - 'feat/**'
+    paths:
+      - 'src/**'
 
 permissions:
   contents: read
@@ -17,6 +34,6 @@ jobs:
     uses: ./.github/workflows/component-build-images.yml
     if: github.repository == 'stleox/opentelemetry-demo'
     with:
-      push: true
-      version: ${{ github.event.release.tag_name }}
+      push: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.push_images) || github.event_name == 'push' }}
+      version: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'workflow_dispatch' && inputs.version || 'dev' }}
     secrets: inherit
