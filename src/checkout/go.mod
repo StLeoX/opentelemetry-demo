@@ -1,4 +1,4 @@
-module github.com/open-telemetry/opentelemetry-demo/src/checkout
+module github.com/stleox/opentelemetry-demo/src/checkout
 
 go 1.24.2
 

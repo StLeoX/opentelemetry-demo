@@ -54,9 +54,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	pb "github.com/open-telemetry/opentelemetry-demo/src/checkout/genproto/oteldemo"
-	"github.com/open-telemetry/opentelemetry-demo/src/checkout/kafka"
-	"github.com/open-telemetry/opentelemetry-demo/src/checkout/money"
+	pb "github.com/stleox/opentelemetry-demo/src/checkout/genproto/oteldemo"
+	"github.com/stleox/opentelemetry-demo/src/checkout/kafka"
+	"github.com/stleox/opentelemetry-demo/src/checkout/money"
 )
 
 //go:generate go install google.golang.org/protobuf/cmd/protoc-gen-go

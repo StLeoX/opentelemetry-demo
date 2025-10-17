@@ -159,7 +159,7 @@ generate-kubernetes-manifests:
 	echo "kind: Namespace" >> kubernetes/opentelemetry-demo.yaml
 	echo "metadata:" >> kubernetes/opentelemetry-demo.yaml
 	echo "  name: otel-demo" >> kubernetes/opentelemetry-demo.yaml
-	helm template opentelemetry-demo open-telemetry/opentelemetry-demo --namespace otel-demo | sed '/helm.sh\/chart\:/d' | sed '/helm.sh\/hook/d' | sed '/managed-by\: Helm/d' >> kubernetes/opentelemetry-demo.yaml
+	helm template opentelemetry-demo stleox/opentelemetry-demo --namespace otel-demo | sed '/helm.sh\/chart\:/d' | sed '/helm.sh\/hook/d' | sed '/managed-by\: Helm/d' >> kubernetes/opentelemetry-demo.yaml
 
 .PHONY: docker-generate-protobuf
 docker-generate-protobuf:
