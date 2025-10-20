@@ -22,6 +22,7 @@ obj/
 .vscode
 .gradle/
 .idea/
+.qoder/
 build/
 node_modules/
 coverage
@@ -52,3 +53,4 @@ test/tracetesting/tracetesting-vars.yaml
 *.apk
 
 !src/currency/build
+/src/checkout/checkout

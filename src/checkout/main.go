@@ -40,6 +40,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/open-telemetry/opentelemetry-demo/src/checkout/genproto/oteldemo"
@@ -245,6 +246,12 @@ func (cs *checkout) PlaceOrder(ctx context.Context, req *pb.PlaceOrderRequest) (
 		attribute.String("app.user.id", req.UserId),
 		attribute.String("app.user.currency", req.UserCurrency),
 	)
+
+	// Add request content as JSON
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
 	log.Infof("[PlaceOrder] user_id=%q user_currency=%q", req.UserId, req.UserCurrency)
 
 	var err error
@@ -386,10 +393,17 @@ func mustCreateClient(svcAddr string) *grpc.ClientConn {
 }
 
 func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, items []*pb.CartItem) (*pb.Money, error) {
-	shippingQuote, err := cs.shippingSvcClient.
-		GetQuote(ctx, &pb.GetQuoteRequest{
-			Address: address,
-			Items:   items})
+	req := &pb.GetQuoteRequest{
+		Address: address,
+		Items:   items}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	shippingQuote, err := cs.shippingSvcClient.GetQuote(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get shipping quote: %+v", err)
 	}
@@ -397,7 +411,15 @@ func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, item
 }
 
 func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartItem, error) {
-	cart, err := cs.cartSvcClient.GetCart(ctx, &pb.GetCartRequest{UserId: userID})
+	req := &pb.GetCartRequest{UserId: userID}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	cart, err := cs.cartSvcClient.GetCart(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user cart during checkout: %+v", err)
 	}
@@ -405,7 +427,15 @@ func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartI
 }
 
 func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
-	if _, err := cs.cartSvcClient.EmptyCart(ctx, &pb.EmptyCartRequest{UserId: userID}); err != nil {
+	req := &pb.EmptyCartRequest{UserId: userID}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	if _, err := cs.cartSvcClient.EmptyCart(ctx, req); err != nil {
 		return fmt.Errorf("failed to empty user cart during checkout: %+v", err)
 	}
 	return nil
@@ -415,7 +445,15 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 	out := make([]*pb.OrderItem, len(items))
 
 	for i, item := range items {
-		product, err := cs.productCatalogSvcClient.GetProduct(ctx, &pb.GetProductRequest{Id: item.GetProductId()})
+		req := &pb.GetProductRequest{Id: item.GetProductId()}
+
+		// Add request content to span
+		span := trace.SpanFromContext(ctx)
+		if reqJSON, err := protoToJSON(req); err == nil {
+			span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+		}
+
+		product, err := cs.productCatalogSvcClient.GetProduct(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
 		}
@@ -431,9 +469,17 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 }
 
 func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurrency string) (*pb.Money, error) {
-	result, err := cs.currencySvcClient.Convert(ctx, &pb.CurrencyConversionRequest{
+	req := &pb.CurrencyConversionRequest{
 		From:   from,
-		ToCode: toCurrency})
+		ToCode: toCurrency}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	result, err := cs.currencySvcClient.Convert(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert currency: %+v", err)
 	}
@@ -448,9 +494,17 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 		paymentService = pb.NewPaymentServiceClient(c)
 	}
 
-	paymentResp, err := paymentService.Charge(ctx, &pb.ChargeRequest{
+	req := &pb.ChargeRequest{
 		Amount:     amount,
-		CreditCard: paymentInfo})
+		CreditCard: paymentInfo}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	paymentResp, err := paymentService.Charge(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("could not charge the card: %+v", err)
 	}
@@ -466,6 +520,10 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 		return fmt.Errorf("failed to marshal order to JSON: %+v", err)
 	}
 
+	// Add HTTP request content to span
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("http.request_content", string(emailPayload)))
+
 	resp, err := otelhttp.Post(ctx, cs.emailSvcAddr+"/send_order_confirmation", "application/json", bytes.NewBuffer(emailPayload))
 	if err != nil {
 		return fmt.Errorf("failed POST to email service: %+v", err)
@@ -480,9 +538,17 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 }
 
 func (cs *checkout) shipOrder(ctx context.Context, address *pb.Address, items []*pb.CartItem) (string, error) {
-	resp, err := cs.shippingSvcClient.ShipOrder(ctx, &pb.ShipOrderRequest{
+	req := &pb.ShipOrderRequest{
 		Address: address,
-		Items:   items})
+		Items:   items}
+
+	// Add request content to span
+	span := trace.SpanFromContext(ctx)
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+
+	resp, err := cs.shippingSvcClient.ShipOrder(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("shipment failed: %+v", err)
 	}
@@ -571,6 +637,16 @@ func createProducerSpan(ctx context.Context, msg *sarama.ProducerMessage) trace.
 		),
 	)
 
+	// Add Kafka message content as JSON
+	if msgBytes, ok := msg.Value.(sarama.ByteEncoder); ok {
+		var orderResult pb.OrderResult
+		if err := proto.Unmarshal([]byte(msgBytes), &orderResult); err == nil {
+			if msgJSON, err := protoToJSON(&orderResult); err == nil {
+				span.SetAttributes(attribute.String("messaging.kafka.message.value", msgJSON))
+			}
+		}
+	}
+
 	carrier := propagation.MapCarrier{}
 	propagator := otel.GetTextMapPropagator()
 	propagator.Inject(spanContext, carrier)
@@ -608,4 +684,17 @@ func (cs *checkout) getIntFeatureFlag(ctx context.Context, featureFlagName strin
 	)
 
 	return int(featureFlagValue)
+}
+
+// protoToJSON converts a protobuf message to JSON string
+func protoToJSON(msg proto.Message) (string, error) {
+	marshaler := protojson.MarshalOptions{
+		EmitUnpopulated: false,
+		UseProtoNames:   true,
+	}
+	jsonBytes, err := marshaler.Marshal(msg)
+	if err != nil {
+		return "", err
+	}
+	return string(jsonBytes), nil
 }
