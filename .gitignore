@@ -22,6 +22,7 @@ obj/
 .vscode
 .gradle/
 .idea/
+.qoder/
 build/
 node_modules/
 coverage

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -508,7 +509,13 @@ func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, item
 		return nil, fmt.Errorf("failed to marshal ship order request: %+v", err)
 	}
 
-	resp, err := otelhttp.Post(ctx, cs.shippingSvcAddr+"/get-quote", "application/json", bytes.NewBuffer(quotePayload))
+	// Ensure the shipping address has http:// prefix
+	shippingURL := cs.shippingSvcAddr
+	if !strings.HasPrefix(shippingURL, "http://") && !strings.HasPrefix(shippingURL, "https://") {
+		shippingURL = "http://" + shippingURL
+	}
+
+	resp, err := otelhttp.Post(ctx, shippingURL+"/get-quote", "application/json", bytes.NewBuffer(quotePayload))
 	if err != nil {
 		return nil, fmt.Errorf("failed POST to shipping service: %+v", err)
 	}
@@ -626,7 +633,13 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 		return fmt.Errorf("failed to marshal order to JSON: %+v", err)
 	}
 
-	resp, err := otelhttp.Post(ctx, cs.emailSvcAddr+"/send_order_confirmation", "application/json", bytes.NewBuffer(emailPayload))
+	// Ensure the email address has http:// prefix
+	emailURL := cs.emailSvcAddr
+	if !strings.HasPrefix(emailURL, "http://") && !strings.HasPrefix(emailURL, "https://") {
+		emailURL = "http://" + emailURL
+	}
+
+	resp, err := otelhttp.Post(ctx, emailURL+"/send_order_confirmation", "application/json", bytes.NewBuffer(emailPayload))
 	if err != nil {
 		return fmt.Errorf("failed POST to email service: %+v", err)
 	}
@@ -653,7 +666,13 @@ func (cs *checkout) shipOrder(ctx context.Context, address *pb.Address, items []
 		return "", fmt.Errorf("failed to marshal ship order request: %+v", err)
 	}
 
-	resp, err := otelhttp.Post(ctx, cs.shippingSvcAddr+"/ship-order", "application/json", bytes.NewBuffer(shipPayload))
+	// Ensure the shipping address has http:// prefix
+	shippingURL := cs.shippingSvcAddr
+	if !strings.HasPrefix(shippingURL, "http://") && !strings.HasPrefix(shippingURL, "https://") {
+		shippingURL = "http://" + shippingURL
+	}
+
+	resp, err := otelhttp.Post(ctx, shippingURL+"/ship-order", "application/json", bytes.NewBuffer(shipPayload))
 	if err != nil {
 		return "", fmt.Errorf("failed POST to shipping service: %+v", err)
 	}
