@@ -1,0 +1,7 @@
+FROM ubuntu:22.04
+
+COPY ./checkout /usr/bin/checkout
+
+EXPOSE ${CHECKOUT_PORT}
+
+ENTRYPOINT [ "/usr/bin/checkout" ]
