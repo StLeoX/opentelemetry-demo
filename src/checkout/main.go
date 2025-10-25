@@ -341,7 +341,7 @@ type orderPrep struct {
 
 func (cs *checkout) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Context, userID, userCurrency string, address *pb.Address) (orderPrep, error) {
 
-	ctx, span := tracer.Start(ctx, "prepareOrderItemsAndShippingQuoteFromCart")
+	ctx, span := tracer.Start(ctx, "checkout.prepareOrder")
 	defer span.End()
 
 	var out orderPrep
@@ -377,6 +377,14 @@ func (cs *checkout) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Contex
 		attribute.Int("app.cart.items.count", int(totalCart)),
 		attribute.Int("app.order.items.count", len(orderItems)),
 	)
+
+	outJSON, err := json.Marshal(out)
+	if err != nil {
+		log.Warnf("Failed to marshal orderPrep to JSON: %+v", err)
+	} else {
+		span.SetAttributes(attribute.String("rpc.grpc.content", string(outJSON)))
+	}
+
 	return out, nil
 }
 
@@ -393,12 +401,14 @@ func mustCreateClient(svcAddr string) *grpc.ClientConn {
 }
 
 func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, items []*pb.CartItem) (*pb.Money, error) {
+	ctx, span := tracer.Start(ctx, "checkout.quoteShipping")
+	defer span.End()
+
 	req := &pb.GetQuoteRequest{
 		Address: address,
 		Items:   items}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -411,10 +421,12 @@ func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, item
 }
 
 func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartItem, error) {
+	ctx, span := tracer.Start(ctx, "checkout.getUserCart")
+	defer span.End()
+
 	req := &pb.GetCartRequest{UserId: userID}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -427,10 +439,11 @@ func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartI
 }
 
 func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
+	ctx, span := tracer.Start(ctx, "checkout.emptyUserCart")
+	defer span.End()
 	req := &pb.EmptyCartRequest{UserId: userID}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -444,11 +457,11 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
 	out := make([]*pb.OrderItem, len(items))
 
-	for i, item := range items {
+	for i, item := range items { // items 就是导致循环的原因，循环了 GetProduct 和 convertCurrency
 		req := &pb.GetProductRequest{Id: item.GetProductId()}
 
+		ctx, span := tracer.Start(ctx, "checkout.prepOrderItems")
 		// Add request content to span
-		span := trace.SpanFromContext(ctx)
 		if reqJSON, err := protoToJSON(req); err == nil {
 			span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 		}
@@ -464,17 +477,21 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 		out[i] = &pb.OrderItem{
 			Item: item,
 			Cost: price}
+
+		span.End()
 	}
 	return out, nil
 }
 
 func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurrency string) (*pb.Money, error) {
+	ctx, span := tracer.Start(ctx, "checkout.convertCurrency")
+	defer span.End()
+
 	req := &pb.CurrencyConversionRequest{
 		From:   from,
 		ToCode: toCurrency}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -487,6 +504,8 @@ func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurre
 }
 
 func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInfo *pb.CreditCardInfo) (string, error) {
+	ctx, span := tracer.Start(ctx, "checkout.chargeCard")
+	defer span.End()
 	paymentService := cs.paymentSvcClient
 	if cs.isFeatureFlagEnabled(ctx, "paymentUnreachable") {
 		badAddress := "badAddress:50051"
@@ -499,7 +518,6 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 		CreditCard: paymentInfo}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -512,6 +530,8 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 }
 
 func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, order *pb.OrderResult) error {
+	ctx, span := tracer.Start(ctx, "checkout.sendOrderConfirmation")
+	defer span.End()
 	emailPayload, err := json.Marshal(map[string]interface{}{
 		"email": email,
 		"order": order,
@@ -521,7 +541,6 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 	}
 
 	// Add HTTP request content to span
-	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attribute.String("http.request_content", string(emailPayload)))
 
 	resp, err := otelhttp.Post(ctx, cs.emailSvcAddr+"/send_order_confirmation", "application/json", bytes.NewBuffer(emailPayload))
@@ -538,12 +557,13 @@ func (cs *checkout) sendOrderConfirmation(ctx context.Context, email string, ord
 }
 
 func (cs *checkout) shipOrder(ctx context.Context, address *pb.Address, items []*pb.CartItem) (string, error) {
+	ctx, span := tracer.Start(ctx, "checkout.shipOrder")
+	defer span.End()
 	req := &pb.ShipOrderRequest{
 		Address: address,
 		Items:   items}
 
 	// Add request content to span
-	span := trace.SpanFromContext(ctx)
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
