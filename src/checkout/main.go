@@ -341,8 +341,8 @@ type orderPrep struct {
 
 func (cs *checkout) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Context, userID, userCurrency string, address *pb.Address) (orderPrep, error) {
 
-	ctx, span := tracer.Start(ctx, "checkout.prepareOrder")
-	defer span.End()
+	//ctx, span := tracer.Start(ctx, "checkout.prepareOrder") // 不是网络 IO，而是 internal
+	//defer span.End()
 
 	var out orderPrep
 	cartItems, err := cs.getUserCart(ctx, userID)
@@ -357,7 +357,7 @@ func (cs *checkout) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Contex
 	if err != nil {
 		return out, fmt.Errorf("shipping quote failure: %+v", err)
 	}
-	shippingPrice, err := cs.convertCurrency(ctx, shippingUSD, userCurrency)
+	shippingPrice, err := cs.convertCurrency(ctx, shippingUSD, userCurrency) // 注意到 quoteShipping 向 convertCurrency 传递了 shippingUSD
 	if err != nil {
 		return out, fmt.Errorf("failed to convert shipping cost to currency: %+v", err)
 	}
@@ -366,24 +366,24 @@ func (cs *checkout) prepareOrderItemsAndShippingQuoteFromCart(ctx context.Contex
 	out.cartItems = cartItems
 	out.orderItems = orderItems
 
-	var totalCart int32
-	for _, ci := range cartItems {
-		totalCart += ci.Quantity
-	}
-	shippingCostFloat, _ := strconv.ParseFloat(fmt.Sprintf("%d.%02d", shippingPrice.GetUnits(), shippingPrice.GetNanos()/1000000000), 64)
+	//var totalCart int32
+	//for _, ci := range cartItems {
+	//	totalCart += ci.Quantity
+	//}
+	//shippingCostFloat, _ := strconv.ParseFloat(fmt.Sprintf("%d.%02d", shippingPrice.GetUnits(), shippingPrice.GetNanos()/1000000000), 64)
 
-	span.SetAttributes(
-		attribute.Float64("app.shipping.amount", shippingCostFloat),
-		attribute.Int("app.cart.items.count", int(totalCart)),
-		attribute.Int("app.order.items.count", len(orderItems)),
-	)
+	//span.SetAttributes(
+	//	attribute.Float64("app.shipping.amount", shippingCostFloat),
+	//	attribute.Int("app.cart.items.count", int(totalCart)),
+	//	attribute.Int("app.order.items.count", len(orderItems)),
+	//)
 
-	outJSON, err := json.Marshal(out)
-	if err != nil {
-		log.Warnf("Failed to marshal orderPrep to JSON: %+v", err)
-	} else {
-		span.SetAttributes(attribute.String("rpc.grpc.content", string(outJSON)))
-	}
+	//outJSON, err := json.Marshal(out)
+	//if err != nil {
+	//	log.Warnf("Failed to marshal orderPrep to JSON: %+v", err)
+	//} else {
+	//	span.SetAttributes(attribute.String("rpc.grpc.content", string(outJSON)))
+	//}
 
 	return out, nil
 }
@@ -408,7 +408,6 @@ func (cs *checkout) quoteShipping(ctx context.Context, address *pb.Address, item
 		Address: address,
 		Items:   items}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -426,7 +425,6 @@ func (cs *checkout) getUserCart(ctx context.Context, userID string) ([]*pb.CartI
 
 	req := &pb.GetCartRequest{UserId: userID}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -443,7 +441,6 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 	defer span.End()
 	req := &pb.EmptyCartRequest{UserId: userID}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -455,21 +452,11 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 }
 
 func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
-	out := make([]*pb.OrderItem, len(items))
+	out := make([]*pb.OrderItem, len(items)) // 压测有概率 items 是空的
 
 	for i, item := range items { // items 就是导致循环的原因，循环了 GetProduct 和 convertCurrency
-		req := &pb.GetProductRequest{Id: item.GetProductId()}
-
-		ctx, span := tracer.Start(ctx, "checkout.prepOrderItems")
-		// Add request content to span
-		if reqJSON, err := protoToJSON(req); err == nil {
-			span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
-		}
-
-		product, err := cs.productCatalogSvcClient.GetProduct(ctx, req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
-		}
+		//ctx, span := tracer.Start(ctx, "checkout.prepOrderItems") // 不是网络 IO，而是 internal
+		product, err := cs.getProduct(ctx, item)
 		price, err := cs.convertCurrency(ctx, product.GetPriceUsd(), userCurrency)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert price of %q to %s", item.GetProductId(), userCurrency)
@@ -477,10 +464,24 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 		out[i] = &pb.OrderItem{
 			Item: item,
 			Cost: price}
-
-		span.End()
 	}
 	return out, nil
+}
+
+func (cs *checkout) getProduct(ctx context.Context, item *pb.CartItem) (*pb.Product, error) {
+	ctx, span := tracer.Start(ctx, "checkout.prepOrderItems")
+	defer span.End()
+
+	req := &pb.GetProductRequest{Id: item.GetProductId()}
+
+	if reqJSON, err := protoToJSON(req); err == nil {
+		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
+	}
+	product, err := cs.productCatalogSvcClient.GetProduct(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get product #%q", item.GetProductId())
+	}
+	return product, err
 }
 
 func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurrency string) (*pb.Money, error) {
@@ -491,7 +492,6 @@ func (cs *checkout) convertCurrency(ctx context.Context, from *pb.Money, toCurre
 		From:   from,
 		ToCode: toCurrency}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -517,7 +517,6 @@ func (cs *checkout) chargeCard(ctx context.Context, amount *pb.Money, paymentInf
 		Amount:     amount,
 		CreditCard: paymentInfo}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
@@ -563,7 +562,6 @@ func (cs *checkout) shipOrder(ctx context.Context, address *pb.Address, items []
 		Address: address,
 		Items:   items}
 
-	// Add request content to span
 	if reqJSON, err := protoToJSON(req); err == nil {
 		span.SetAttributes(attribute.String("rpc.grpc.content", reqJSON))
 	}
