@@ -8,6 +8,7 @@ use shop::shipping_service_server::ShippingService;
 use shop::{GetQuoteRequest, GetQuoteResponse, Money, ShipOrderRequest, ShipOrderResponse};
 use tonic::{Request, Response, Status};
 
+
 use log::*;
 
 mod quote;
@@ -50,6 +51,68 @@ impl<'a> Extractor for MetadataMap<'a> {
     }
 }
 
+/// Convert a protobuf message to JSON-like string for tracing
+/// Since we don't have protojson equivalent in Rust, we'll create a simple JSON representation
+fn get_quote_request_to_json(req: &GetQuoteRequest) -> String {
+    let address_json = match &req.address {
+        Some(addr) => format!(
+            r#"{{"street_address":"{}","city":"{}","state":"{}","country":"{}","zip_code":"{}"}}"#,
+            addr.street_address, addr.city, addr.state, addr.country, addr.zip_code
+        ),
+        None => "null".to_string(),
+    };
+    
+    let items_json: Vec<String> = req.items.iter().map(|item| {
+        format!(
+            r#"{{"product_id":"{}","quantity":{}}}"#,
+            item.product_id, item.quantity
+        )
+    }).collect();
+    
+    format!(
+        r#"{{"address":{},"items":[{}]}}"#,
+        address_json,
+        items_json.join(",")
+    )
+}
+
+fn ship_order_request_to_json(req: &ShipOrderRequest) -> String {
+    let address_json = match &req.address {
+        Some(addr) => format!(
+            r#"{{"street_address":"{}","city":"{}","state":"{}","country":"{}","zip_code":"{}"}}"#,
+            addr.street_address, addr.city, addr.state, addr.country, addr.zip_code
+        ),
+        None => "null".to_string(),
+    };
+    
+    let items_json: Vec<String> = req.items.iter().map(|item| {
+        format!(
+            r#"{{"product_id":"{}","quantity":{}}}"#,
+            item.product_id, item.quantity
+        )
+    }).collect();
+    
+    format!(
+        r#"{{"address":{},"items":[{}]}}"#,
+        address_json,
+        items_json.join(",")
+    )
+}
+
+fn get_quote_response_to_json(resp: &GetQuoteResponse) -> String {
+    match &resp.cost_usd {
+        Some(money) => format!(
+            r#"{{"cost_usd":{{"currency_code":"{}","units":{},"nanos":{}}}}}"#,
+            money.currency_code, money.units, money.nanos
+        ),
+        None => r#"{"cost_usd": 0}"#.to_string(),
+    }
+}
+
+fn ship_order_response_to_json(resp: &ShipOrderResponse) -> String {
+    format!(r#"{{"tracking_id":"{}"}}"#, resp.tracking_id)
+}
+
 #[tonic::async_trait]
 impl ShippingService for ShippingServer {
     async fn get_quote(
@@ -62,9 +125,12 @@ impl ShippingService for ShippingServer {
 
         let request_message = request.into_inner();
 
+        // Add request content as JSON to span
+        let request_json = get_quote_request_to_json(&request_message);
+
         let itemct: u32 = request_message
             .items
-            .into_iter()
+            .iter()
             .fold(0, |accum, cart_item| accum + (cart_item.quantity as u32));
 
         // We may want to ask another service for product pricing / info
@@ -78,12 +144,19 @@ impl ShippingService for ShippingServer {
         span.set_attribute(KeyValue::new(semconv::trace::RPC_SYSTEM, RPC_SYSTEM_GRPC));
         span.set_attribute(KeyValue::new(semconv::trace::RPC_SERVICE, RPC_SERVICE_SHIPPING));
         span.set_attribute(KeyValue::new(semconv::trace::RPC_METHOD, "GetQuote"));
+        
+        // Add request content to span
+        span.set_attribute(KeyValue::new("rpc.grpc.content", request_json));
 
         span.add_event("Processing get quote request".to_string(), vec![]);
-        span.set_attribute(KeyValue::new(
-            "app.shipping.zip_code",
-            request_message.address.unwrap().zip_code,
-        ));
+        
+        // Safely get zip_code from address
+        if let Some(address) = &request_message.address {
+            span.set_attribute(KeyValue::new(
+                "app.shipping.zip_code",
+                address.zip_code.clone(),
+            ));
+        }
 
         let cx = Context::current_with_span(span);
         let q = match create_quote_from_count(itemct)
@@ -107,6 +180,11 @@ impl ShippingService for ShippingServer {
                 nanos: q.cents * NANOS_MULTIPLE,
             }),
         };
+        
+        // Add response content to span
+        let response_json = get_quote_response_to_json(&reply);
+        cx.span().set_attribute(KeyValue::new("rpc.grpc.content", response_json));
+        
         info!("Sending Quote: {}", q);
 
         cx.span().set_attribute(KeyValue::new(
@@ -123,6 +201,12 @@ impl ShippingService for ShippingServer {
 
         let parent_cx =
             global::get_text_map_propagator(|prop| prop.extract(&MetadataMap(request.metadata())));
+        
+        let request_message = request.into_inner();
+        
+        // Add request content as JSON to span
+        let request_json = ship_order_request_to_json(&request_message);
+        
         // in this case, generating a tracking ID is trivial
         // we'll create a span and associated events all in this function.
         let tracer = global::tracer("shipping");
@@ -133,6 +217,9 @@ impl ShippingService for ShippingServer {
         span.set_attribute(KeyValue::new(semconv::trace::RPC_SYSTEM, RPC_SYSTEM_GRPC));
         span.set_attribute(KeyValue::new(semconv::trace::RPC_SERVICE, RPC_SERVICE_SHIPPING));
         span.set_attribute(KeyValue::new(semconv::trace::RPC_METHOD, "ShipOrder"));
+        
+        // Add request content to span
+        span.set_attribute(KeyValue::new("rpc.grpc.content", request_json));
 
         span.add_event("Processing shipping order request".to_string(), vec![]);
 
@@ -145,11 +232,17 @@ impl ShippingService for ShippingServer {
             vec![],
         );
 
+        let reply = ShipOrderResponse { tracking_id: tid };
+        
+        // Add response content to span
+        let response_json = ship_order_response_to_json(&reply);
+        span.set_attribute(KeyValue::new("rpc.grpc.content", response_json));
+
         span.set_attribute(KeyValue::new(
             semconv::trace::RPC_GRPC_STATUS_CODE,
             RPC_GRPC_STATUS_CODE_OK,
         ));
-        Ok(Response::new(ShipOrderResponse { tracking_id: tid }))
+        Ok(Response::new(reply))
     }
 }
 

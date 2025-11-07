@@ -452,9 +452,9 @@ func (cs *checkout) emptyUserCart(ctx context.Context, userID string) error {
 }
 
 func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, userCurrency string) ([]*pb.OrderItem, error) {
-	out := make([]*pb.OrderItem, len(items)) // 压测有概率 items 是空的
+	out := make([]*pb.OrderItem, len(items)) // 压测有概率 items 是空的，然后不触发 getProduct 操作
 
-	for i, item := range items { // items 就是导致循环的原因，循环了 GetProduct 和 convertCurrency
+	for i, item := range items { // items 导致了循环，循环了 getProduct 和 convertCurrency 操作
 		//ctx, span := tracer.Start(ctx, "checkout.prepOrderItems") // 不是网络 IO，而是 internal
 		product, err := cs.getProduct(ctx, item)
 		price, err := cs.convertCurrency(ctx, product.GetPriceUsd(), userCurrency)
@@ -469,7 +469,7 @@ func (cs *checkout) prepOrderItems(ctx context.Context, items []*pb.CartItem, us
 }
 
 func (cs *checkout) getProduct(ctx context.Context, item *pb.CartItem) (*pb.Product, error) {
-	ctx, span := tracer.Start(ctx, "checkout.prepOrderItems")
+	ctx, span := tracer.Start(ctx, "checkout.getProduct")
 	defer span.End()
 
 	req := &pb.GetProductRequest{Id: item.GetProductId()}
