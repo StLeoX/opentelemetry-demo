@@ -99,19 +99,19 @@ fn ship_order_request_to_json(req: &ShipOrderRequest) -> String {
     )
 }
 
-fn get_quote_response_to_json(resp: &GetQuoteResponse) -> String {
-    match &resp.cost_usd {
-        Some(money) => format!(
-            r#"{{"cost_usd":{{"currency_code":"{}","units":{},"nanos":{}}}}}"#,
-            money.currency_code, money.units, money.nanos
-        ),
-        None => r#"{"cost_usd": 0}"#.to_string(),
-    }
-}
-
-fn ship_order_response_to_json(resp: &ShipOrderResponse) -> String {
-    format!(r#"{{"tracking_id":"{}"}}"#, resp.tracking_id)
-}
+// fn get_quote_response_to_json(resp: &GetQuoteResponse) -> String {
+//     match &resp.cost_usd {
+//         Some(money) => format!(
+//             r#"{{"cost_usd":{{"currency_code":"{}","units":{},"nanos":{}}}}}"#,
+//             money.currency_code, money.units, money.nanos
+//         ),
+//         None => r#"{"cost_usd": 0}"#.to_string(),
+//     }
+// }
+//
+// fn ship_order_response_to_json(resp: &ShipOrderResponse) -> String {
+//     format!(r#"{{"tracking_id":"{}"}}"#, resp.tracking_id)
+// }
 
 #[tonic::async_trait]
 impl ShippingService for ShippingServer {
@@ -131,14 +131,14 @@ impl ShippingService for ShippingServer {
         let itemct: u32 = request_message
             .items
             .iter()
-            .fold(0, |accum, cart_item| accum + (cart_item.quantity as u32));
+            .fold(0, |accum, cart_item| accum + (cart_item.quantity as u32));  // 积累 item 总数
 
         // We may want to ask another service for product pricing / info
         // (although now everything is assumed to be the same price)
         // check out the create_quote_from_count method to see how we use the span created here
         let tracer = global::tracer("shipping");
         let mut span = tracer
-            .span_builder("oteldemo.ShippingService/GetQuote")
+            .span_builder("shipping.getQuote")
             .with_kind(SpanKind::Server)
             .start_with_context(&tracer, &parent_cx);
         span.set_attribute(KeyValue::new(semconv::trace::RPC_SYSTEM, RPC_SYSTEM_GRPC));
@@ -158,13 +158,29 @@ impl ShippingService for ShippingServer {
             ));
         }
 
+        // 创建新 span 来跟踪报价创建过程
         let cx = Context::current_with_span(span);
-        let q = match create_quote_from_count(itemct)
-            .with_context(cx.clone())
+        let mut quote_span = tracer
+            .span_builder("shipping.createQuote")
+            .with_kind(SpanKind::Client)  // fixme 可以直接用 client 吗？
+            .start_with_context(&tracer, &cx);
+
+        // 在新 span 中添加 itemct 信息
+        let itemct_json = format!(r#"{{"item_count": {} }}"#, itemct);
+        quote_span.set_attribute(KeyValue::new("rpc.grpc.content", itemct_json.clone()));
+
+        let quote_cx = Context::current_with_span(quote_span);
+        let q = match create_quote_from_count(itemct)  // 这里是 rust 风格的 grpc 调用。
+            .with_context(quote_cx.clone())
             .await
         {
             Ok(quote) => quote,
             Err(status) => {
+                quote_cx.span().set_attribute(KeyValue::new(
+                    semconv::trace::RPC_GRPC_STATUS_CODE,
+                    RPC_GRPC_STATUS_CODE_UNKNOWN,
+                ));
+                quote_cx.span().end();
                 cx.span().set_attribute(KeyValue::new(
                     semconv::trace::RPC_GRPC_STATUS_CODE,
                     RPC_GRPC_STATUS_CODE_UNKNOWN,
@@ -172,6 +188,7 @@ impl ShippingService for ShippingServer {
                 return Err(status);
             }
         };
+        quote_cx.span().end();
 
         let reply = GetQuoteResponse {
             cost_usd: Some(Money {
@@ -181,9 +198,9 @@ impl ShippingService for ShippingServer {
             }),
         };
         
-        // Add response content to span
-        let response_json = get_quote_response_to_json(&reply);
-        cx.span().set_attribute(KeyValue::new("rpc.grpc.content", response_json));
+//         // Add response content to span
+//         let response_json = get_quote_response_to_json(&reply);
+//         cx.span().set_attribute(KeyValue::new("rpc.grpc.content", response_json));
         
         info!("Sending Quote: {}", q);
 
@@ -193,6 +210,7 @@ impl ShippingService for ShippingServer {
         ));
         Ok(Response::new(reply))
     }
+
     async fn ship_order(
         &self,
         request: Request<ShipOrderRequest>,
@@ -227,6 +245,7 @@ impl ShippingService for ShippingServer {
         span.set_attribute(KeyValue::new("app.shipping.tracking.id", tid.clone()));
         info!("Tracking ID Created: {}", tid);
 
+        // 注意：这里的逻辑是直接返回，不会有网络请求。
         span.add_event(
             "Shipping tracking id created, response sent back".to_string(),
             vec![],
@@ -234,9 +253,9 @@ impl ShippingService for ShippingServer {
 
         let reply = ShipOrderResponse { tracking_id: tid };
         
-        // Add response content to span
-        let response_json = ship_order_response_to_json(&reply);
-        span.set_attribute(KeyValue::new("rpc.grpc.content", response_json));
+//         // Add response content to span
+//         let response_json = ship_order_response_to_json(&reply);
+//         span.set_attribute(KeyValue::new("rpc.grpc.content", response_json));
 
         span.set_attribute(KeyValue::new(
             semconv::trace::RPC_GRPC_STATUS_CODE,
