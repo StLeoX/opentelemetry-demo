@@ -3,16 +3,22 @@
 
 import { ChannelCredentials } from '@grpc/grpc-js';
 import { CheckoutServiceClient, PlaceOrderRequest, PlaceOrderResponse } from '../../protos/demo';
+import { createWrappedGrpcCall } from '../../utils/telemetry/GrpcClientWrapper';
 
 const { CHECKOUT_ADDR = '' } = process.env;
 
 const client = new CheckoutServiceClient(CHECKOUT_ADDR, ChannelCredentials.createInsecure());
 
+// 创建包装的 gRPC 调用
+const wrappedPlaceOrder = createWrappedGrpcCall<PlaceOrderRequest, PlaceOrderResponse>(
+  client, 
+  'CheckoutService', 
+  'placeOrder'
+);
+
 const CheckoutGateway = () => ({
   placeOrder(order: PlaceOrderRequest) {
-    return new Promise<PlaceOrderResponse>((resolve, reject) =>
-      client.placeOrder(order, (error, response) => (error ? reject(error) : resolve(response)))
-    );
+    return wrappedPlaceOrder(order);
   },
 });
 
