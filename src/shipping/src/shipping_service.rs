@@ -158,11 +158,12 @@ impl ShippingService for ShippingServer {
             ));
         }
 
+        // todo 移到 create_quote_from_count 函数内部
         // 创建新 span 来跟踪报价创建过程
         let cx = Context::current_with_span(span);
         let mut quote_span = tracer
             .span_builder("shipping.createQuote")
-            .with_kind(SpanKind::Client)  // fixme 可以直接用 client 吗？
+            .with_kind(SpanKind::Client)
             .start_with_context(&tracer, &cx);
 
         // 在新 span 中添加 itemct 信息
@@ -170,7 +171,7 @@ impl ShippingService for ShippingServer {
         quote_span.set_attribute(KeyValue::new("rpc.grpc.content", itemct_json.clone()));
 
         let quote_cx = Context::current_with_span(quote_span);
-        let q = match create_quote_from_count(itemct)  // 这里是 rust 风格的 grpc 调用。
+        let q = match create_quote_from_count(itemct)
             .with_context(quote_cx.clone())
             .await
         {
